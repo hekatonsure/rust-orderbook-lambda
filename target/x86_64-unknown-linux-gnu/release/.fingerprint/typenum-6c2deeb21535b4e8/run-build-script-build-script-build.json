@@ -1,0 +1,1 @@
+{"rustc":12013579709055016942,"features":"","declared_features":"","target":0,"profile":0,"path":0,"deps":[[17001665395952474378,"build_script_build",false,5112158176310848331]],"local":[{"RerunIfChanged":{"output":"x86_64-unknown-linux-gnu/release/build/typenum-6c2deeb21535b4e8/output","paths":["tests"]}}],"rustflags":["-C","target-cpu=haswell"],"config":0,"compile_kind":0}

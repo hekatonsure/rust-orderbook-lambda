@@ -1,0 +1,126 @@
+Transform: AWS::Serverless-2016-10-31
+
+Globals:
+  Function:
+    Runtime: provided.al2
+    Architectures: [x86_64]
+    Timeout: 30
+    Environment:
+      Variables:
+        RUST_BACKTRACE: 1
+        BUCKET_NAME: !Ref OrderBookBucket
+
+Resources:
+  OrderBookBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-orderbook-data"
+      LifecycleConfiguration:
+        Rules:
+          - Id: ArchiveOldData
+            Status: Enabled
+            Transitions:
+              - StorageClass: GLACIER
+                TransitionInDays: 7
+
+  OrderBookDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${AWS::StackName}-orderbook-dlq.fifo"
+      FifoQueue: true
+      ContentBasedDeduplication: true
+      MessageRetentionPeriod: 1209600  # 14 days
+
+  OrderBookFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-orderbook-ingestion"
+      CodeUri: target/lambda/orderbook/
+      Handler: bootstrap
+      MemorySize: 512
+      Timeout: 30
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt OrderBookDLQ.Arn
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref OrderBookBucket
+        - Statement:
+          - Effect: Allow
+            Action:
+              - cloudwatch:PutMetricData
+            Resource: "*"
+      Events:
+        Schedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(30 seconds)
+            Name: !Sub "${AWS::StackName}-orderbook-schedule"
+            Description: Trigger orderbook snapshot every 30s
+            Enabled: true
+
+  RecoveryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-orderbook-recovery"
+      CodeUri: target/lambda/recovery/
+      Handler: bootstrap
+      MemorySize: 256
+      Timeout: 10
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref OrderBookBucket
+        - SQSPollerPolicy:
+            QueueName: !GetAtt OrderBookDLQ.QueueName
+      Events:
+        DLQEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt OrderBookDLQ.Arn
+            BatchSize: 1
+
+  LagAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-websocket-lag"
+      AlarmDescription: Alert when WebSocket lag exceeds 5 seconds
+      MetricName: websocket_lag_ms
+      Namespace: OrderBook
+      Dimensions:
+        - Name: Lambda
+          Value: !Ref OrderBookFunction
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 5000
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: breaching
+
+  FailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-lambda-failures"
+      AlarmDescription: Alert on consecutive Lambda failures
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref OrderBookFunction
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 3
+      ComparisonOperator: GreaterThanThreshold
+
+Outputs:
+  BucketName:
+    Description: S3 bucket for orderbook data
+    Value: !Ref OrderBookBucket
+  
+  DuckDBQuery:
+    Description: Query string for DuckDB analytics
+    Value: !Sub "SELECT * FROM read_parquet('s3://${OrderBookBucket}/orderbook/*/*/*/*/*.avro')"
+  
+  MainFunctionArn:
+    Description: Main Lambda function ARN
+    Value: !GetAtt OrderBookFunction.Arn

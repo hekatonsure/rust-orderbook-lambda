@@ -1,0 +1,1 @@
+{"rustc":12013579709055016942,"features":"","declared_features":"","target":0,"profile":0,"path":0,"deps":[[9689903380558560274,"build_script_build",false,1289144878831309853]],"local":[{"RerunIfChanged":{"output":"x86_64-unknown-linux-gnu/release/build/serde-2cd4c32f38e3c972/output","paths":["build.rs"]}}],"rustflags":["-C","target-cpu=haswell"],"config":0,"compile_kind":0}
