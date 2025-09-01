@@ -1,6 +1,6 @@
 # realtime binance order book ingest (demo portfolio project)
 
-this project shows a compact real-time data pipeline for ingesting, normalizing, storing, and analyzing binance btcusdt order book data. everything fits in <200 loc of rust + one cloudformation yaml.
+this project shows a compact real-time data pipeline for ingesting, normalizing, storing, and analyzing binance btcusdt order book data. everything fits in <200 loc of rust + one aws sam template.
 
 ---
 
@@ -13,6 +13,7 @@ this project shows a compact real-time data pipeline for ingesting, normalizing,
 - **resilience**: backfill/recovery mode detects gaps via `lastUpdateId` and reseeds from rest
 - **monitoring**: cloudwatch embedded metrics (`ingest_lag_ms`, `drop_rate_ppm`, `reconnects`, `levels_filled`)
 - **analytics**: 20-line duckdb sql on s3 for 5s volatility, spread, imbalance
+- **infra**: deployed with **aws sam** template (instead of raw cloudformation)
 
 ---
 
@@ -82,16 +83,33 @@ ORDER BY t5;
 
 ---
 
+## aws sam template (high level)
+
+* **resources**:
+
+  * s3 bucket (encrypted, versioning enabled)
+  * dynamodb table for state (`symbol` pk, optional `run_id`)
+  * rust lambda function (zip artifact) with env vars (`BUCKET`, `DEPTHS`, etc.)
+  * eventbridge rules (ingest every 14m, recover every 5m) wired to same lambda with different `MODE`
+  * iam role with least-privileges (s3 put, ddb r/w, cw logs/metrics, ssm read)
+  * cloudwatch alarms for lag and drop rate
+
+* **local dev**: `sam build` (cargo lambda), `sam local invoke` for quick tests
+
+* **deploy**: `sam deploy --guided` → creates bucket, lambda, ddb, eventbridge rules automatically
+
+---
+
 ## gotchas
 
-* **exchange semantics**: binance diffs must be gated against `lastUpdateId`; missing sequences = drift. rest snapshot may already be stale; record both exchange `event_ts` and ingest ts.
-* **lambda quirks**: 15m max runtime → run \~14m chunks; handle cold starts and reconnects with jitter. ensure idempotent s3 writes via temp keys.
-* **storage**: small file tax is real. hourly partitions keep listing cheap, but compact to parquet for prod. partition pruning critical.
-* **avro pitfalls**: schema evolution requires defaults. logical types must stay consistent. snappy > deflate for perf.
-* **numeric traps**: float rounding at tick grid can cross sides; use integer ticks/lots internally. imbalance blows up if book thins; clip values.
-* **monitoring**: drop detection can false-trip on reconnects; separate `gap_due_to_reconnect` vs real gap. lag alarms should key off p95/p99 sustained, not single spikes.
-* **ddb state**: single hot partition if pk=`symbol`; shard or add `run_id`. use consistent reads. ttl old state.
-* **backfill**: no public replay of diffs; demo resets from rest and tags records `recovered=true`. note data loss window.
-* **ops/security**: kms on s3, least-priv iam, lifecycle rules for cost. cloudwatch metrics get \$\$; batch emit with EMF.
-* **market changes**: tick/lot sizes can change. validate symbol metadata each run. log structured, sample at rate.
-* **scope honesty**: this is a demo—prod would add parquet compactor, exactly-once s3 sink, multi-az failover, raw diff archive.
+* **exchange semantics**: diffs must be gated by `lastUpdateId` or you silently drift. rest snapshot may already be stale; record both `event_ts` and ingest time.
+* **lambda quirks**: 15m max → run 14m chunks, reconnect with jitter, persist seq state. writes should be idempotent via temp key then final s3 key.
+* **storage**: hourly partitions avoid s3 listing pain, but parquet compaction is necessary beyond demo scale.
+* **avro pitfalls**: schema evolution needs defaults, logical types must be consistent, snappy > deflate.
+* **numeric traps**: tick rounding can straddle sides; better to store ints for ticks/lots. imbalance can explode—clip.
+* **monitoring**: drop detection can false-trip on reconnects; separate reconnect gaps vs real stream loss. alarm on sustained p95 lag not single blips.
+* **ddb state**: pk hot-spotting if single symbol; shard or add `run_id`. enforce consistent reads; ttl cleanup.
+* **backfill**: no public diff replay → demo reseeds from rest and tags `recovered=true`. data loss window is explicit.
+* **ops/security**: kms on s3, least-priv iam, bucket lifecycle mgmt. cw metrics \$\$ → batch emit.
+* **market changes**: tick/lot sizes can change—validate symbol metadata each run. log structured, sample if high volume.
+* **scope honesty**: demo only. prod would add parquet compactor, exactly-once s3 sink, multi-az, raw diff lane.
