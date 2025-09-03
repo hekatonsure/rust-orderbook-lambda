@@ -10,6 +10,21 @@ A simple AWS Lambda function that collects Bitcoin orderbook data from Binance.U
 - **Storage**: Stores as Avro files in S3 with date-based partitioning
 - **Recovery**: Basic recovery function stub for backfilling gaps (incomplete)
 
+```
+tokei==========================================================================
+Language            Files        Lines         Code     Comments       Blanks
+===============================================================================
+ Rust                    2          285          241            4           40
+ YAML                    1          126          114            2           10
+ TOML                    2           35           31            1            3
+ Shell                   2           32           25            4            3
+ SQL                     1           21           21            0            0
+ JSON                    2           13           13            0            0
+===============================================================================
+ Total                  10          512          445           11           56
+===============================================================================
+```
+
 ## Architecture
 
 ```
@@ -26,6 +41,77 @@ A simple AWS Lambda function that collects Bitcoin orderbook data from Binance.U
 4. Normalizes to 5 fixed depth levels from mid-price
 5. Calculates spread, mid-price, and imbalance ratio
 6. Serializes to Avro format and stores in S3
+
+## Infrastructure Components
+
+The SAM template creates:
+- **S3 Bucket**: Stores Avro files with lifecycle policy (archive to Glacier after 7 days)
+- **Main Lambda**: Orderbook collection function (512MB memory, 30s timeout)
+- **Recovery Lambda**: Backfill function triggered by DLQ (256MB memory, 10s timeout)
+- **SQS DLQ**: Dead letter queue for failed invocations
+- **EventBridge Rule**: Triggers main function every 1 minute
+- **CloudWatch Alarms**: Monitor WebSocket lag and Lambda failures
+
+## Current Limitations
+
+### Known Issues
+- **Hardcoded bucket name**: "orderbook-data" is hardcoded in main.rs:88
+- **No DynamoDB**: Template doesn't include DynamoDB state tracking mentioned in design
+- **Basic error handling**: Simple exponential backoff, no sophisticated reconnection
+- **No compression**: Files stored without Snappy compression
+- **Incomplete recovery**: Recovery function is a basic stub
+- **Single symbol**: Only handles BTC/USDT, not configurable
+
+### Production Readiness Gaps
+- No health checks or ping/pong for WebSocket connections
+- No batching - each message triggers individual S3 write
+- Missing structured logging and comprehensive monitoring
+- No gap detection or proper backfill logic
+- Basic CloudWatch alarms only
+
+## Deployment
+
+### Prerequisites
+- AWS CLI configured
+- SAM CLI installed  
+- Cargo Lambda installed (`cargo install cargo-lambda`)
+
+### Deploy
+```bash
+# Build both Lambda functions
+cargo lambda build --release --bin orderbook-lambda
+cargo lambda build --release --bin recovery
+
+# Deploy with SAM
+sam build
+sam deploy --guided  # First time
+sam deploy           # Subsequent deployments
+```
+
+## Local Development
+
+### Test WebSocket Connection
+```bash
+# Build and run WebSocket test
+cargo build --bin test_websocket
+./target/debug/test_websocket
+```
+
+### Test Full Pipeline Locally
+```bash
+# Runs full processing pipeline, writes to ./data/ instead of S3
+cargo build --bin test_local  
+./target/debug/test_local
+```
+
+### Run Lambda Locally
+```bash
+# Terminal 1
+cargo lambda watch --bin orderbook-lambda
+
+# Terminal 2  
+cargo lambda invoke orderbook-lambda --data-file test-event.json
+```
 
 ### S3 Storage Structure
 ```
@@ -55,78 +141,6 @@ s3://bucket-name/
     {"name": "imbalance_ratio", "type": "double"}
   ]
 }
-```
-
-## Deployment
-
-### Prerequisites
-- AWS CLI configured
-- SAM CLI installed  
-- Cargo Lambda installed (`cargo install cargo-lambda`)
-
-### Deploy
-```bash
-# Build both Lambda functions
-cargo lambda build --release --bin orderbook-lambda
-cargo lambda build --release --bin recovery
-
-# Deploy with SAM
-sam build
-sam deploy --guided  # First time
-sam deploy           # Subsequent deployments
-```
-
-
-## Infrastructure Components
-
-The SAM template creates:
-- **S3 Bucket**: Stores Avro files with lifecycle policy (archive to Glacier after 7 days)
-- **Main Lambda**: Orderbook collection function (512MB memory, 30s timeout)
-- **Recovery Lambda**: Backfill function triggered by DLQ (256MB memory, 10s timeout)
-- **SQS DLQ**: Dead letter queue for failed invocations
-- **EventBridge Rule**: Triggers main function every 1 minute
-- **CloudWatch Alarms**: Monitor WebSocket lag and Lambda failures
-
-## Current Limitations
-
-### Known Issues
-- **Hardcoded bucket name**: "orderbook-data" is hardcoded in main.rs:88
-- **No DynamoDB**: Template doesn't include DynamoDB state tracking mentioned in design
-- **Basic error handling**: Simple exponential backoff, no sophisticated reconnection
-- **No compression**: Files stored without Snappy compression
-- **Incomplete recovery**: Recovery function is a basic stub
-- **Single symbol**: Only handles BTC/USDT, not configurable
-
-### Production Readiness Gaps
-- No health checks or ping/pong for WebSocket connections
-- No batching - each message triggers individual S3 write
-- Missing structured logging and comprehensive monitoring
-- No gap detection or proper backfill logic
-- Basic CloudWatch alarms only
-
-## Local Development
-
-### Test WebSocket Connection
-```bash
-# Build and run WebSocket test
-cargo build --bin test_websocket
-./target/debug/test_websocket
-```
-
-### Test Full Pipeline Locally
-```bash
-# Runs full processing pipeline, writes to ./data/ instead of S3
-cargo build --bin test_local  
-./target/debug/test_local
-```
-
-### Run Lambda Locally
-```bash
-# Terminal 1
-cargo lambda watch --bin orderbook-lambda
-
-# Terminal 2  
-cargo lambda invoke orderbook-lambda --data-file test-event.json
 ```
 
 ## Data Analysis
@@ -211,18 +225,4 @@ aws lambda invoke \
   --function-name orderbook-lambda \
   --payload '{}' \
   response.json
-```
-```
-tokei==========================================================================
-Language            Files        Lines         Code     Comments       Blanks
-===============================================================================
- Rust                    2          285          241            4           40
- YAML                    1          126          114            2           10
- TOML                    2           35           31            1            3
- Shell                   2           32           25            4            3
- SQL                     1           21           21            0            0
- JSON                    2           13           13            0            0
-===============================================================================
- Total                  10          512          445           11           56
-===============================================================================
 ```
