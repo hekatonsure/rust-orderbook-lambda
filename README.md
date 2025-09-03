@@ -76,14 +76,6 @@ sam deploy --guided  # First time
 sam deploy           # Subsequent deployments
 ```
 
-### Manual Deploy Script
-```bash
-#!/bin/bash
-cargo lambda build --release --bin orderbook-lambda
-cargo lambda build --release --bin recovery
-sam build
-sam deploy
-```
 
 ## Infrastructure Components
 
@@ -221,4 +213,15 @@ aws lambda invoke \
   response.json
 ```
 
-This is a functional but basic implementation suitable for development and testing. Production use would require significant enhancements to error handling, monitoring, and data reliability.
+===============================================================================
+ Language            Files        Lines         Code     Comments       Blanks
+===============================================================================
+ JSON                   12          513          513            0            0
+ Rust                    5          658          554           12           92
+ Shell                   2           32           25            4            3
+ SQL                     1           21           21            0            0
+ TOML                    2           35           31            1            3
+ YAML                    1          126          114            2           10
+===============================================================================
+ Total                  23         1385         1258           19          108
+===============================================================================
