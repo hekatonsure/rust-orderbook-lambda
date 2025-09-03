@@ -14,8 +14,8 @@ A simple AWS Lambda function that collects Bitcoin orderbook data from Binance.U
 
 ```
 ┌─────────────────┐    WebSocket     ┌──────────────┐    Avro     ┌─────────────┐
-│   Binance.US    │ ───────────────▶ │    Lambda    │ ──────────▶ │     S3      │
-│  depth20@100ms  │                  │  (1 min)     │             │  Partitioned│
+│   Binance.US    │ ───────────────> │    Lambda    │ ──────────> │     S3      │
+│  depth20@100ms  │                  │   (1 min)    │             │ Partitioned │
 └─────────────────┘                  └──────────────┘             └─────────────┘
 ```
 
