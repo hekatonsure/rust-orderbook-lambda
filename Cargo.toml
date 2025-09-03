@@ -13,12 +13,14 @@ path = "src/recovery.rs"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-tokio-tungstenite = "0.21"
+tokio-tungstenite = { version = "0.21", features = ["rustls-tls-native-roots"] }
 aws_lambda_events = "0.15"
 lambda_runtime = "0.11"
 aws-sdk-s3 = "1.17"
+aws-config = "1.1"
 apache-avro = "0.16"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = "0.4"
 futures-util = "0.3"
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }

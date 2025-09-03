@@ -1,9 +1,9 @@
+use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client;
-use chrono::Utc;
+use chrono::{Datelike, Timelike, Utc};
 use futures_util::StreamExt;
 use lambda_runtime::{run, service_fn, Error, LambdaEvent};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use tokio_tungstenite::connect_async;
 
 #[derive(Serialize, Deserialize)]
@@ -23,8 +23,10 @@ struct BinanceDepth {
 }
 
 async fn function_handler(_: LambdaEvent<serde_json::Value>) -> Result<(), Error> {
-    let s3 = Client::new(&aws_config::load_from_env().await);
-    let url = "wss://stream.binance.com:9443/ws/btcusdt@depth20@100ms";
+    let s3 = Client::new(&aws_config::load_defaults(BehaviorVersion::latest()).await);
+    // Note: Using Binance US endpoint due to geo-restrictions
+    // Using BTCUSDT (Bitcoin/Tether) as it's the most liquid BTC pair on Binance.US
+    let url = "wss://stream.binance.us:9443/ws/btcusdt@depth20@100ms";
     
     let (ws_stream, _) = connect_async(url).await?;
     let (_, mut read) = ws_stream.split();
@@ -43,7 +45,7 @@ async fn function_handler(_: LambdaEvent<serde_json::Value>) -> Result<(), Error
     Ok(())
 }
 
-async fn process_message(msg: tungstenite::Message, s3: &Client) -> Result<(), Error> {
+async fn process_message(msg: tokio_tungstenite::tungstenite::Message, s3: &Client) -> Result<(), Error> {
     let depth: BinanceDepth = serde_json::from_str(&msg.to_string())?;
     
     let bids: Vec<(f64, f64)> = depth.bids.iter()

@@ -1,6 +1,9 @@
 version = 0.1
 [default.deploy.parameters]
-stack_name = "orderbook-stack"
+stack_name = "orderbook-lambda"
 region = "us-east-1"
 capabilities = "CAPABILITY_IAM"
-s3_bucket = "my-sam-artifacts"
+#s3_bucket = "my-sam-artifacts"
+resolve_s3 = true
+s3_prefix = "orderbook-lambda"
+image_repositories = []

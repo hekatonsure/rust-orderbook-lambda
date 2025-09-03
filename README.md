@@ -1,115 +1,224 @@
-# realtime binance order book ingest (demo portfolio project)
+# Binance.US BTC/USDT Orderbook Data Collection
 
-this project shows a compact real-time data pipeline for ingesting, normalizing, storing, and analyzing binance btcusdt order book data. everything fits in <200 loc of rust + one aws sam template.
+A simple AWS Lambda function that collects Bitcoin orderbook data from Binance.US WebSocket streams and stores it in S3 as Avro files.
 
----
+## What This Actually Does
 
-## overview
+- **Data Source**: Binance.US WebSocket stream (`wss://stream.binance.us:9443/ws/btcusdt@depth20@100ms`)
+- **Schedule**: Runs every 1 minute (configurable in template.yaml)
+- **Processing**: Takes top 20 bid/ask levels and normalizes to 5 depth levels (0.01%, 0.05%, 0.1%, 0.5%, 1%)
+- **Storage**: Stores as Avro files in S3 with date-based partitioning
+- **Recovery**: Basic recovery function stub for backfilling gaps (incomplete)
 
-- **runtime**: rust lambda (tokio), runs in 14m bursts
-- **source**: binance websocket diffs (`btcusdt@depth@100ms`) + rest snapshot for bootstrap
-- **normalization**: l2 aggregation to fixed depth levels (10/20/50)
-- **storage**: avro + snappy in s3, partitioned by `market/symbol/dt/hour/depth`
-- **resilience**: backfill/recovery mode detects gaps via `lastUpdateId` and reseeds from rest
-- **monitoring**: cloudwatch embedded metrics (`ingest_lag_ms`, `drop_rate_ppm`, `reconnects`, `levels_filled`)
-- **analytics**: 20-line duckdb sql on s3 for 5s volatility, spread, imbalance
-- **infra**: deployed with **aws sam** template (instead of raw cloudformation)
+## Architecture
 
----
+```
+┌─────────────────┐    WebSocket     ┌──────────────┐    Avro     ┌─────────────┐
+│   Binance.US    │ ───────────────▶ │    Lambda    │ ──────────▶ │     S3      │
+│  depth20@100ms  │                  │  (1 min)     │             │  Partitioned│
+└─────────────────┘                  └──────────────┘             └─────────────┘
+```
 
-## schema (avro)
+### Data Flow
+1. Lambda triggered every minute by EventBridge
+2. Connects to Binance.US WebSocket stream
+3. Processes depth snapshots with top 20 bid/ask levels
+4. Normalizes to 5 fixed depth levels from mid-price
+5. Calculates spread, mid-price, and imbalance ratio
+6. Serializes to Avro format and stores in S3
+
+### S3 Storage Structure
+```
+s3://bucket-name/
+  └── orderbook/
+      └── year=2025/
+          └── month=09/
+              └── day=03/
+                  └── hour=14/
+                      ├── 1725379686983.avro
+                      ├── 1725379746124.avro
+                      └── ...
+```
+
+## Actual Avro Schema
 
 ```json
 {
-  "type":"record","name":"l2",
-  "fields":[
-    {"name":"venue","type":"string"},
-    {"name":"symbol","type":"string"},
-    {"name":"event_ts","type":"long","logicalType":"timestamp-micros"},
-    {"name":"ingest_ts","type":"long","logicalType":"timestamp-micros"},
-    {"name":"last_update_id","type":"long"},
-    {"name":"depth","type":"int"},
-    {"name":"levels","type":{
-      "type":"array","items":{
-        "type":"record","name":"lvl",
-        "fields":[
-          {"name":"side","type":{"type":"enum","name":"side","symbols":["bid","ask"]}},
-          {"name":"px","type":"double"},
-          {"name":"qty","type":"double"}
-        ]}}},
-    {"name":"mid","type":"double"},
-    {"name":"spread_bps","type":"double"},
-    {"name":"imbalance","type":"double"},
-    {"name":"gap_detected","type":"boolean","default":false}
+  "type": "record",
+  "name": "OrderBook",
+  "fields": [
+    {"name": "timestamp_ms", "type": "long"},
+    {"name": "bids", "type": {"type": "array", "items": {"type": "array", "items": "double"}}},
+    {"name": "asks", "type": {"type": "array", "items": {"type": "array", "items": "double"}}},
+    {"name": "spread", "type": "double"},
+    {"name": "mid_price", "type": "double"},
+    {"name": "imbalance_ratio", "type": "double"}
   ]
 }
 ```
 
----
+## Deployment
 
-## sample duckdb query
+### Prerequisites
+- AWS CLI configured
+- SAM CLI installed  
+- Cargo Lambda installed (`cargo install cargo-lambda`)
 
-```sql
-PRAGMA s3_region='us-west-2';
-SET s3_url_style='path';
-LOAD avro;
+### Deploy
+```bash
+# Build both Lambda functions
+cargo lambda build --release --bin orderbook-lambda
+cargo lambda build --release --bin recovery
 
-CREATE OR REPLACE VIEW v AS
-SELECT
-  event_ts::TIMESTAMP as ts,
-  mid, spread_bps, imbalance
-FROM read_avro('s3://bucket/market=binance/symbol=btcusdt/dt=2025-09-01/hour=*/depth=20/*.avro');
-
-WITH b AS (
-  SELECT
-    window_start as t5,
-    FIRST(mid) OVER (PARTITION BY window_start ORDER BY ts) AS mid0,
-    LAST(mid)  OVER (PARTITION BY window_start ORDER BY ts) AS mid1,
-    AVG(spread_bps) AS avg_spread_bps,
-    AVG(imbalance)  AS avg_imb
-  FROM v
-  WINDOW tumble AS (PARTITION BY 1 ORDER BY ts RANGE INTERVAL 5 SECOND)
-)
-SELECT
-  t5,
-  CASE WHEN mid0>0 AND mid1>0 THEN
-    1e4 * ABS(LN(mid1) - LN(mid0))  -- 5s vol in bps
-  ELSE NULL END AS vol5s_bps,
-  avg_spread_bps,
-  avg_imb
-FROM b
-ORDER BY t5;
+# Deploy with SAM
+sam build
+sam deploy --guided  # First time
+sam deploy           # Subsequent deployments
 ```
 
----
+### Manual Deploy Script
+```bash
+#!/bin/bash
+cargo lambda build --release --bin orderbook-lambda
+cargo lambda build --release --bin recovery
+sam build
+sam deploy
+```
 
-## aws sam template (high level)
+## Infrastructure Components
 
-* **resources**:
+The SAM template creates:
+- **S3 Bucket**: Stores Avro files with lifecycle policy (archive to Glacier after 7 days)
+- **Main Lambda**: Orderbook collection function (512MB memory, 30s timeout)
+- **Recovery Lambda**: Backfill function triggered by DLQ (256MB memory, 10s timeout)
+- **SQS DLQ**: Dead letter queue for failed invocations
+- **EventBridge Rule**: Triggers main function every 1 minute
+- **CloudWatch Alarms**: Monitor WebSocket lag and Lambda failures
 
-  * s3 bucket (encrypted, versioning enabled)
-  * dynamodb table for state (`symbol` pk, optional `run_id`)
-  * rust lambda function (zip artifact) with env vars (`BUCKET`, `DEPTHS`, etc.)
-  * eventbridge rules (ingest every 14m, recover every 5m) wired to same lambda with different `MODE`
-  * iam role with least-privileges (s3 put, ddb r/w, cw logs/metrics, ssm read)
-  * cloudwatch alarms for lag and drop rate
+## Current Limitations
 
-* **local dev**: `sam build` (cargo lambda), `sam local invoke` for quick tests
+### Known Issues
+- **Hardcoded bucket name**: "orderbook-data" is hardcoded in main.rs:88
+- **No DynamoDB**: Template doesn't include DynamoDB state tracking mentioned in design
+- **Basic error handling**: Simple exponential backoff, no sophisticated reconnection
+- **No compression**: Files stored without Snappy compression
+- **Incomplete recovery**: Recovery function is a basic stub
+- **Single symbol**: Only handles BTC/USDT, not configurable
 
-* **deploy**: `sam deploy --guided` → creates bucket, lambda, ddb, eventbridge rules automatically
+### Production Readiness Gaps
+- No health checks or ping/pong for WebSocket connections
+- No batching - each message triggers individual S3 write
+- Missing structured logging and comprehensive monitoring
+- No gap detection or proper backfill logic
+- Basic CloudWatch alarms only
 
----
+## Local Development
 
-## gotchas
+### Test WebSocket Connection
+```bash
+# Build and run WebSocket test
+cargo build --bin test_websocket
+./target/debug/test_websocket
+```
 
-* **exchange semantics**: diffs must be gated by `lastUpdateId` or you silently drift. rest snapshot may already be stale; record both `event_ts` and ingest time.
-* **lambda quirks**: 15m max → run 14m chunks, reconnect with jitter, persist seq state. writes should be idempotent via temp key then final s3 key.
-* **storage**: hourly partitions avoid s3 listing pain, but parquet compaction is necessary beyond demo scale.
-* **avro pitfalls**: schema evolution needs defaults, logical types must be consistent, snappy > deflate.
-* **numeric traps**: tick rounding can straddle sides; better to store ints for ticks/lots. imbalance can explode—clip.
-* **monitoring**: drop detection can false-trip on reconnects; separate reconnect gaps vs real stream loss. alarm on sustained p95 lag not single blips.
-* **ddb state**: pk hot-spotting if single symbol; shard or add `run_id`. enforce consistent reads; ttl cleanup.
-* **backfill**: no public diff replay → demo reseeds from rest and tags `recovered=true`. data loss window is explicit.
-* **ops/security**: kms on s3, least-priv iam, bucket lifecycle mgmt. cw metrics \$\$ → batch emit.
-* **market changes**: tick/lot sizes can change—validate symbol metadata each run. log structured, sample if high volume.
-* **scope honesty**: demo only. prod would add parquet compactor, exactly-once s3 sink, multi-az, raw diff lane.
+### Test Full Pipeline Locally
+```bash
+# Runs full processing pipeline, writes to ./data/ instead of S3
+cargo build --bin test_local  
+./target/debug/test_local
+```
+
+### Run Lambda Locally
+```bash
+# Terminal 1
+cargo lambda watch --bin orderbook-lambda
+
+# Terminal 2  
+cargo lambda invoke orderbook-lambda --data-file test-event.json
+```
+
+## Data Analysis
+
+### Reading Avro Files
+```python
+import avro.datafile
+import avro.io
+
+with open('1725379686983.avro', 'rb') as f:
+    reader = avro.datafile.DataFileReader(f, avro.io.DatumReader())
+    for record in reader:
+        print(f"Timestamp: {record['timestamp_ms']}")
+        print(f"Mid Price: ${record['mid_price']}")
+        print(f"Spread: ${record['spread']}")
+```
+
+### Athena Queries
+```sql
+-- Create external table
+CREATE EXTERNAL TABLE orderbook_data (
+  timestamp_ms bigint,
+  bids array<array<double>>,
+  asks array<array<double>>,
+  spread double,
+  mid_price double,
+  imbalance_ratio double
+)
+STORED AS AVRO
+LOCATION 's3://your-bucket/orderbook/'
+PARTITIONED BY (year int, month int, day int, hour int);
+
+-- Query recent data
+SELECT 
+  from_unixtime(timestamp_ms/1000) as time,
+  mid_price,
+  spread,
+  imbalance_ratio
+FROM orderbook_data
+WHERE year = 2025 AND month = 9 AND day = 3
+ORDER BY timestamp_ms DESC
+LIMIT 100;
+```
+
+## Configuration
+
+### Change Collection Frequency
+Edit `template.yaml`:
+```yaml
+Schedule: rate(1 minute)  # Change to desired frequency
+```
+
+### Use Environment Variables
+Update main.rs to use environment variables instead of hardcoded values:
+```rust
+let bucket = std::env::var("BUCKET_NAME").unwrap_or("orderbook-data".to_string());
+```
+
+## Monitoring
+
+### View Logs
+```bash
+# Recent logs
+sam logs -n OrderBookFunction --tail
+
+# Stream logs  
+sam logs -n OrderBookFunction --tail --follow
+```
+
+### Check S3 Data
+```bash
+# List recent files
+aws s3 ls s3://your-bucket/orderbook/ --recursive | tail -10
+
+# Check data for specific day
+aws s3 ls s3://your-bucket/orderbook/year=2025/month=09/day=03/ --recursive --summarize
+```
+
+### Manual Invocation
+```bash
+aws lambda invoke \
+  --function-name orderbook-lambda \
+  --payload '{}' \
+  response.json
+```
+
+This is a functional but basic implementation suitable for development and testing. Production use would require significant enhancements to error handling, monitoring, and data reliability.

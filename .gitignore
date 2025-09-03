@@ -1,2 +1,4 @@
 aws/
 sam-installation/
+target/
+*.md

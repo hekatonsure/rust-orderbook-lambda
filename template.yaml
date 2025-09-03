@@ -26,16 +26,16 @@ Resources:
   OrderBookDLQ:
     Type: AWS::SQS::Queue
     Properties:
-      QueueName: !Sub "${AWS::StackName}-orderbook-dlq.fifo"
-      FifoQueue: true
-      ContentBasedDeduplication: true
+      QueueName: !Sub "${AWS::StackName}-orderbook-dlq"
+      # FifoQueue: true
+      # ContentBasedDeduplication: true
       MessageRetentionPeriod: 1209600  # 14 days
 
   OrderBookFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub "${AWS::StackName}-orderbook-ingestion"
-      CodeUri: target/lambda/orderbook/
+      CodeUri: target/lambda/orderbook-lambda/
       Handler: bootstrap
       MemorySize: 512
       Timeout: 30
@@ -54,9 +54,9 @@ Resources:
         Schedule:
           Type: Schedule
           Properties:
-            Schedule: rate(30 seconds)
+            Schedule: rate(1 minute)
             Name: !Sub "${AWS::StackName}-orderbook-schedule"
-            Description: Trigger orderbook snapshot every 30s
+            Description: Trigger orderbook snapshot every minute
             Enabled: true
 
   RecoveryFunction:
