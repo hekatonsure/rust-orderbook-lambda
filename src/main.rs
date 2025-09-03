@@ -50,8 +50,8 @@ async fn process_message(msg: tokio_tungstenite::tungstenite::Message, s3: &Clie
     
     let bids: Vec<(f64, f64)> = depth.bids.iter()
         .take(20)
-        .map(|b| (b[0].parse().unwrap(), b[1].parse().unwrap()))
-        .collect();
+        .map(|b| (b[0].parse().unwrap(), b[1].parse().unwrap())) //parse().ok()? check instead
+        .collect();                                              //of unwrap() which could fail
     
     let asks: Vec<(f64, f64)> = depth.asks.iter()
         .take(20)
