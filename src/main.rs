@@ -45,7 +45,6 @@ async fn handler(_: LambdaEvent<serde_json::Value>) -> Result<(), Error> {
         let txt = msg?.to_text()?.to_string();  // handles all message types
         let v: serde_json::Value = serde_json::from_str(&txt)?;
         
-        // parse books
         let parse_book = |key| -> Vec<(f64, f64)> {
             v[key].as_array().unwrap().iter().take(20)
                 .map(|x| (x[0].as_str().unwrap().parse().unwrap(), 

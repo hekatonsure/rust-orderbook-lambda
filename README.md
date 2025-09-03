@@ -12,16 +12,16 @@ A simple AWS Lambda function that collects Bitcoin orderbook data from Binance.U
 
 ```
 tokei==========================================================================
-Language            Files        Lines         Code     Comments       Blanks
+ Language            Files        Lines         Code     Comments       Blanks
 ===============================================================================
- Rust                    2          285          241            4           40
+ Rust                    2          205          168            8           29
  YAML                    1          126          114            2           10
  TOML                    2           35           31            1            3
  Shell                   2           32           25            4            3
  SQL                     1           21           21            0            0
  JSON                    2           13           13            0            0
 ===============================================================================
- Total                  10          512          445           11           56
+ Total                  10          432          372           15           45
 ===============================================================================
 ```
 
